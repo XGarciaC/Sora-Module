@@ -11,7 +11,7 @@
    "quality": "1080p",
    "baseUrl": "https://animeav1.com/",
    "searchBaseUrl": "https://animeav1.com/catalogo?q=%s",
-   "scriptUrl": "https://your-host.com/animeav1.js",
+   "scriptUrl": "https://raw.githubusercontent.com/XGarciaC/Sora-Module/refs/heads/main/animeav1.js",
    "asyncJS": true,
    "type": "anime"
 }
