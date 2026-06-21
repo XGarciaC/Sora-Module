@@ -1,7 +1,7 @@
 // AnimeAV1 Sora Module
 // Source: https://animeav1.com
 // Language: Spanish (SUB + DUB)
-// Stream Type: MP4 (with fallback to HLS player embed)
+// Stream Type: MP4
 
 async function searchResults(keyword) {
     try {
@@ -11,36 +11,20 @@ async function searchResults(keyword) {
 
         const results = [];
 
-        // Parse cover image IDs
-        const covers = [];
-        const coverRegex = /https:\/\/cdn\.animeav1\.com\/covers\/(\d+)\.jpg/g;
-        let coverMatch;
-        while ((coverMatch = coverRegex.exec(html)) !== null) {
-            covers.push(`https://cdn.animeav1.com/covers/${coverMatch[1]}.jpg`);
-        }
+        // Match each anime block: cover image + title + href together
+        // Pattern: cover URL appears just before the title and href in each card
+        const cardRegex = /https:\/\/cdn\.animeav1\.com\/covers\/(\d+)\.jpg[\s\S]*?###\s+(.+?)\n[\s\S]*?href="(https:\/\/animeav1\.com\/media\/[^"\/]+)"[^>]*>\s*Ver /g;
 
-        // Parse titles from ### headings
-        const titles = [];
-        const titleRegex = /###\s+(.+?)\n/g;
-        let titleMatch;
-        while ((titleMatch = titleRegex.exec(html)) !== null) {
-            titles.push(titleMatch[1].trim());
-        }
+        let match;
+        while ((match = cardRegex.exec(html)) !== null) {
+            const imageId = match[1];
+            const title = match[2].trim();
+            const href = match[3];
 
-        // Parse hrefs — only catalog-level links (not episode links)
-        const hrefs = [];
-        const linkRegex = /href="(https:\/\/animeav1\.com\/media\/([^"\/]+))"[^>]*>\s*Ver [^<]+<\/a>/g;
-        let linkMatch;
-        while ((linkMatch = linkRegex.exec(html)) !== null) {
-            hrefs.push(linkMatch[1]);
-        }
-
-        const len = Math.min(titles.length, hrefs.length, covers.length);
-        for (let i = 0; i < len; i++) {
             results.push({
-                title: titles[i],
-                image: covers[i],
-                href: hrefs[i]
+                title: title,
+                image: `https://cdn.animeav1.com/covers/${imageId}.jpg`,
+                href: href
             });
         }
 
@@ -58,22 +42,23 @@ async function searchResults(keyword) {
 
 async function extractDetails(url) {
     try {
-        // Strip any ?audio= suffix before fetching
         const cleanUrl = url.split('?')[0];
         const response = await fetchv2(cleanUrl);
         const html = await response.text();
 
-        const descMatch = html.match(/meta-description:\s*(.+)/);
-        const description = descMatch
-            ? descMatch[1].trim()
-            : 'No description available';
+        // Description from meta tag
+        const descMatch = html.match(/meta-description:\s*([^\n]+)/);
+        const description = descMatch ? descMatch[1].trim() : 'No description available';
 
-        const typeMatch = html.match(/TV Anime|OVA|Película|Especial/);
+        // Type
+        const typeMatch = html.match(/TV Anime|OVA|Pel[ií]cula|Especial/);
         const type = typeMatch ? typeMatch[0] : 'Anime';
 
+        // Year
         const yearMatch = html.match(/•\s*(\d{4})\s*•/);
         const year = yearMatch ? yearMatch[1] : 'Unknown';
 
+        // Genres
         const genreMatches = [...html.matchAll(/catalogo\?genre=[^"]+">([^<]+)<\/a>/g)];
         const genres = genreMatches.map(m => m[1]).join(', ');
 
@@ -103,7 +88,7 @@ async function extractEpisodes(url) {
         if (!slugMatch) throw new Error('Could not extract slug from URL');
         const slug = slugMatch[1];
 
-        // Collect unique episode numbers from links
+        // Collect unique episode numbers
         const episodeRegex = new RegExp(`href="https://animeav1\\.com/media/${slug}/(\\d+)"`, 'g');
         const seen = new Set();
         const episodeNumbers = [];
@@ -123,8 +108,7 @@ async function extractEpisodes(url) {
             return JSON.stringify([{ href: cleanUrl + '/1', number: 1 }]);
         }
 
-        // Check if this anime has DUB available by fetching episode 1
-        // and looking for the DUB section in the page
+        // Check episode 1 for DUB availability
         const firstEpResponse = await fetchv2(`https://animeav1.com/media/${slug}/${episodeNumbers[0]}`);
         const firstEpHtml = await firstEpResponse.text();
         const hasDub = /\bDUB\b/.test(firstEpHtml);
@@ -132,16 +116,14 @@ async function extractEpisodes(url) {
         const episodes = [];
         for (const num of episodeNumbers) {
             const baseHref = `https://animeav1.com/media/${slug}/${num}`;
-            // Always include SUB
             episodes.push({
                 href: baseHref + '?audio=sub',
                 number: num
             });
-            // Include DUB as a second entry (e.g. episode 1 → "1", dub episode 1 → "1 (DUB)")
             if (hasDub) {
                 episodes.push({
                     href: baseHref + '?audio=dub',
-                    number: parseFloat(`${num}.5`) // offset to keep sort order; Sora displays the number field
+                    number: parseFloat(`${num}.5`)
                 });
             }
         }
@@ -156,54 +138,40 @@ async function extractEpisodes(url) {
 
 async function extractStreamUrl(url) {
     try {
-        // Determine audio preference from the query param we added
         const isDub = url.includes('?audio=dub');
         const cleanUrl = url.split('?')[0];
 
         const response = await fetchv2(cleanUrl);
         const html = await response.text();
 
-        // The page has two sections: SUB and DUB, each followed by player links.
-        // Split on the DUB section marker so we can target the right block.
+        // Split page into SUB and DUB sections
         let targetSection = html;
+        const dubIndex = html.indexOf('\nDUB\n');
 
-        if (isDub) {
-            // Find the DUB block — it comes after the SUB block
-            const dubIndex = html.indexOf('\nDUB\n');
-            if (dubIndex !== -1) {
-                targetSection = html.substring(dubIndex);
-            }
-        } else {
-            // Use only the SUB block (everything before the DUB section)
-            const dubIndex = html.indexOf('\nDUB\n');
-            if (dubIndex !== -1) {
-                targetSection = html.substring(0, dubIndex);
-            }
+        if (isDub && dubIndex !== -1) {
+            targetSection = html.substring(dubIndex);
+        } else if (!isDub && dubIndex !== -1) {
+            targetSection = html.substring(0, dubIndex);
         }
 
-        // 1. Try to find a direct .mp4 URL in the target section
+        // 1. Direct .mp4 URL
         const mp4Match = targetSection.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/);
-        if (mp4Match) {
-            return mp4Match[0];
-        }
+        if (mp4Match) return mp4Match[0];
 
-        // 2. Try to find a zilla-networks or similar embed player URL
+        // 2. Zilla or other embed player URL
         const playerMatch = targetSection.match(/https?:\/\/player\.[^\s"'<>]+/);
         if (playerMatch) {
-            const playerUrl = playerMatch[0];
-            const playerResponse = await fetchv2(playerUrl);
+            const playerResponse = await fetchv2(playerMatch[0]);
             const playerHtml = await playerResponse.text();
 
-            // Look for mp4 inside the player page
             const playerMp4 = playerHtml.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/);
             if (playerMp4) return playerMp4[0];
 
-            // Fallback: look for an HLS .m3u8 inside the player page
             const playerHls = playerHtml.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/);
             if (playerHls) return playerHls[0];
         }
 
-        // 3. Fallback: look for any iframe embed in the section
+        // 3. Any iframe embed
         const iframeMatch = targetSection.match(/<iframe[^>]+src=["'](https?:\/\/[^"']+)["']/i);
         if (iframeMatch) {
             const iframeResponse = await fetchv2(iframeMatch[1]);
