@@ -1,6 +1,6 @@
 // AnimeAV1 Sora Module
 // Source: https://animeav1.com
-// Uses SvelteKit __data.json internal API to bypass JS rendering
+// Uses SvelteKit __data.json internal API
 // Language: Spanish (SUB + DUB)
 
 async function soraFetch(url, options = {}) {
@@ -28,74 +28,62 @@ async function soraFetch(url, options = {}) {
     }
 }
 
-// Recursively extract all string and number values from SvelteKit's devalue nodes
-function extractNodes(data) {
-    if (!data || !data.nodes) return [];
-    return data.nodes.filter(n => n !== null && n !== undefined);
-}
-
-// Find anime entries from __data.json node array
-// SvelteKit stores page data as a flat array of values with index references
-function parseAnimeList(nodes) {
-    const results = [];
-    // Look for objects that have slug/title/cover patterns
-    for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i];
-        if (node && typeof node === 'object' && node.slug && node.title && node.cover) {
-            results.push({
-                title: node.title,
-                image: `https://cdn.animeav1.com/covers/${node.cover}.jpg`,
-                href: `https://animeav1.com/media/${node.slug}`
-            });
-        }
+// Resolve a value from SvelteKit's flat data array.
+// Values can be direct or index references into the array.
+function resolve(data, val) {
+    if (typeof val === 'number' && val < data.length && typeof data[val] !== 'number') {
+        return data[val];
     }
-    return results;
+    return val;
 }
 
 async function searchResults(keyword) {
     try {
         const encodedKeyword = encodeURIComponent(keyword);
-
-        // Use SvelteKit's __data.json endpoint — returns raw JSON without JS rendering
         const text = await soraFetch(
             `https://animeav1.com/catalogo/__data.json?q=${encodedKeyword}`,
             { headers: { 'Accept': 'application/json' } }
         );
-
         if (!text) return JSON.stringify([]);
 
-        const data = JSON.parse(text);
-        const nodes = extractNodes(data);
-        const results = parseAnimeList(nodes);
+        const json = JSON.parse(text);
+        // Data is in nodes[2].data — a flat array
+        const data = json.nodes[2].data;
 
-        if (results.length > 0) return JSON.stringify(results);
+        // data[0] = { results: 1, total: ..., ... }
+        // data[1] = array of indices pointing to each anime's first field index
+        // Each anime entry follows the template at data[2]: {id, title, synopsis, categoryId, slug, category}
+        // So for each index i in data[1], the anime object is at data[i]
+        // and its fields: title = data[i+1], synopsis = data[i+2], slug = data[i+4]
+        // cover/id = data[i] (the numeric id string like "3812")
 
-        // Fallback: scan nodes for title/slug patterns stored as flat values
-        const fallback = [];
-        const slugs = [];
-        const titles = [];
-        const covers = [];
+        const resultsIndexArray = data[1]; // array of starting indices for each anime
+        const results = [];
 
-        for (const node of nodes) {
-            if (typeof node === 'string') {
-                if (node.match(/^[a-z0-9]+(-[a-z0-9]+)+$/) && !node.includes('http')) slugs.push(node);
-                if (node.match(/\d+/) && node.length < 6 && !node.includes('/')) covers.push(node);
-                if (node.length > 3 && node.length < 100 && /[A-ZÁÉÍÓÚÑ]/.test(node)) titles.push(node);
-            }
-        }
+        for (const startIdx of resultsIndexArray) {
+            const animeObj = data[startIdx];
+            if (!animeObj || typeof animeObj !== 'object') continue;
 
-        const len = Math.min(slugs.length, titles.length, covers.length);
-        for (let i = 0; i < len; i++) {
-            fallback.push({
-                title: titles[i],
-                image: `https://cdn.animeav1.com/covers/${covers[i]}.jpg`,
-                href: `https://animeav1.com/media/${slugs[i]}`
+            // animeObj has keys: id, title, synopsis, categoryId, slug, category
+            // Each value is an index into the data array
+            const id = resolve(data, animeObj.id);       // numeric string like "3812"
+            const title = resolve(data, animeObj.title);
+            const slug = resolve(data, animeObj.slug);
+
+            if (!title || !slug) continue;
+
+            results.push({
+                title: title,
+                image: `https://cdn.animeav1.com/covers/${id}.jpg`,
+                href: `https://animeav1.com/media/${slug}`
             });
         }
 
-        return fallback.length > 0
-            ? JSON.stringify(fallback)
-            : JSON.stringify([{ title: 'No results found', image: '', href: '' }]);
+        if (results.length === 0) {
+            return JSON.stringify([{ title: 'No results found', image: '', href: '' }]);
+        }
+
+        return JSON.stringify(results);
 
     } catch (error) {
         console.log('searchResults error:', error);
@@ -113,24 +101,35 @@ async function extractDetails(url) {
             `https://animeav1.com/media/${slug}/__data.json`,
             { headers: { 'Accept': 'application/json' } }
         );
-
         if (!text) throw new Error('No response');
 
-        const data = JSON.parse(text);
-        const nodes = extractNodes(data);
+        const json = JSON.parse(text);
+        const data = json.nodes[2].data;
 
+        // Find the main anime object in the flat array
         let description = 'No description available';
         let year = 'Unknown';
         let type = 'Anime';
         let genres = '';
 
-        for (const node of nodes) {
+        for (let i = 0; i < data.length; i++) {
+            const node = data[i];
             if (node && typeof node === 'object') {
-                if (node.synopsis || node.description) description = node.synopsis || node.description;
-                if (node.year) year = String(node.year);
-                if (node.type) type = node.type;
-                if (node.genres && Array.isArray(node.genres)) {
-                    genres = node.genres.map(g => g.name || g).join(', ');
+                if (node.synopsis !== undefined && node.title !== undefined) {
+                    description = resolve(data, node.synopsis) || description;
+                    year = resolve(data, node.year) ? String(resolve(data, node.year)) : year;
+
+                    const catObj = resolve(data, node.category);
+                    if (catObj && typeof catObj === 'object') {
+                        type = resolve(data, catObj.name) || type;
+                    }
+                }
+                if (node.genres !== undefined && Array.isArray(resolve(data, node.genres))) {
+                    const genreArr = resolve(data, node.genres);
+                    genres = genreArr.map(g => {
+                        const gObj = resolve(data, g);
+                        return gObj && typeof gObj === 'object' ? resolve(data, gObj.name) : g;
+                    }).filter(Boolean).join(', ');
                 }
             }
         }
@@ -161,51 +160,51 @@ async function extractEpisodes(url) {
             `https://animeav1.com/media/${slug}/__data.json`,
             { headers: { 'Accept': 'application/json' } }
         );
-
         if (!text) throw new Error('No response');
 
-        const data = JSON.parse(text);
-        const nodes = extractNodes(data);
+        const json = JSON.parse(text);
+        const data = json.nodes[2].data;
 
         let totalEpisodes = 0;
         let hasDub = false;
 
-        for (const node of nodes) {
+        for (let i = 0; i < data.length; i++) {
+            const node = data[i];
             if (node && typeof node === 'object') {
-                if (typeof node.episodes === 'number') totalEpisodes = node.episodes;
-                if (node.episodes_count) totalEpisodes = node.episodes_count;
-                if (node.dub === true || node.has_dub === true) hasDub = true;
-            }
-            // Also check for dub flag as a boolean node
-            if (node === true && !hasDub) {
-                // check surrounding context — will be refined below
+                if (node.episodes_count !== undefined) {
+                    totalEpisodes = resolve(data, node.episodes_count) || 0;
+                }
+                if (node.episodes !== undefined && typeof resolve(data, node.episodes) === 'number') {
+                    totalEpisodes = resolve(data, node.episodes);
+                }
+                if (node.dub !== undefined && resolve(data, node.dub) === true) hasDub = true;
+                if (node.has_dub !== undefined && resolve(data, node.has_dub) === true) hasDub = true;
             }
         }
 
-        // If we couldn't find episode count in nodes, check episode 1
-        // to confirm structure and fallback to fetching ep 1 data
+        // Also check raw text for dub flags
+        if (text.includes('"dub":true') || text.includes('"has_dub":true')) hasDub = true;
+
+        // Fallback: fetch episode 1 to check dub and confirm structure
         if (totalEpisodes === 0) {
             const ep1Text = await soraFetch(
                 `https://animeav1.com/media/${slug}/1/__data.json`,
                 { headers: { 'Accept': 'application/json' } }
             );
             if (ep1Text) {
-                const ep1Data = JSON.parse(ep1Text);
-                const ep1Nodes = extractNodes(ep1Data);
-                for (const node of ep1Nodes) {
+                const ep1Json = JSON.parse(ep1Text);
+                const ep1Data = ep1Json.nodes[2].data;
+                for (let i = 0; i < ep1Data.length; i++) {
+                    const node = ep1Data[i];
                     if (node && typeof node === 'object') {
-                        if (typeof node.total === 'number') totalEpisodes = node.total;
-                        if (typeof node.episodes === 'number') totalEpisodes = node.episodes;
-                        if (node.dub === true || node.has_dub === true) hasDub = true;
+                        if (node.total !== undefined) totalEpisodes = resolve(ep1Data, node.total) || 0;
+                        if (node.episodes_count !== undefined) totalEpisodes = resolve(ep1Data, node.episodes_count) || 0;
+                        if (node.dub !== undefined && resolve(ep1Data, node.dub) === true) hasDub = true;
                     }
                 }
-                // Also check raw text for dub marker
                 if (ep1Text.includes('"dub":true') || ep1Text.includes('"has_dub":true')) hasDub = true;
             }
         }
-
-        // Check raw text for dub marker in main page data
-        if (text.includes('"dub":true') || text.includes('"has_dub":true')) hasDub = true;
 
         if (totalEpisodes === 0) totalEpisodes = 1;
 
@@ -230,8 +229,6 @@ async function extractStreamUrl(url) {
     try {
         const isDub = url.includes('?audio=dub');
         const cleanUrl = url.split('?')[0];
-
-        // e.g. /media/baki-dou/1 → slug=baki-dou, ep=1
         const parts = cleanUrl.split('/media/')[1]?.split('/');
         const slug = parts?.[0];
         const ep = parts?.[1];
@@ -241,52 +238,49 @@ async function extractStreamUrl(url) {
             `https://animeav1.com/media/${slug}/${ep}/__data.json`,
             { headers: { 'Accept': 'application/json' } }
         );
-
         if (!text) return JSON.stringify({ streams: [] });
 
-        const data = JSON.parse(text);
-        const nodes = extractNodes(data);
+        const json = JSON.parse(text);
+        const data = json.nodes[2].data;
         const streams = [];
 
-        // Look for stream server objects in nodes
-        // AnimeAV1 typically stores servers as: { type: 'hls'|'mp4', url: '...', variant: 'sub'|'dub' }
-        for (const node of nodes) {
+        for (let i = 0; i < data.length; i++) {
+            const node = data[i];
             if (!node || typeof node !== 'object') continue;
 
-            const variant = (node.variant || node.lang || node.type_audio || '').toLowerCase();
-            const isSubNode = !variant || variant === 'sub' || variant === 'latino';
-            const isDubNode = variant === 'dub' || variant === 'doblaje';
+            // Look for server objects with url/embed and variant info
+            const variant = resolve(data, node.variant) || resolve(data, node.lang) || '';
+            const variantLower = String(variant).toLowerCase();
+            const isDubNode = variantLower === 'dub' || variantLower === 'doblaje';
+            const isSubNode = !variantLower || variantLower === 'sub' || variantLower === 'latino';
 
-            // Skip if wrong audio type
-            if (isDub && !isDubNode && variant) continue;
+            if (isDub && !isDubNode && variantLower) continue;
             if (!isDub && isDubNode) continue;
 
-            // Check for direct stream URL
-            const streamUrl = node.url || node.file || node.src || node.stream;
+            const streamUrl = resolve(data, node.url) || resolve(data, node.file) || resolve(data, node.src);
             if (streamUrl && typeof streamUrl === 'string' && streamUrl.startsWith('http')) {
-                const isHls = streamUrl.includes('.m3u8');
-                const isMp4 = streamUrl.includes('.mp4');
-                if (isHls || isMp4) {
+                if (streamUrl.includes('.m3u8') || streamUrl.includes('.mp4')) {
                     streams.push({
-                        title: `${node.server || node.name || 'Stream'} (${isDub ? 'DUB' : 'SUB'})`,
+                        title: `${resolve(data, node.server) || resolve(data, node.name) || 'Stream'} (${isDub ? 'DUB' : 'SUB'})`,
                         streamUrl,
                         headers: { 'Referer': 'https://animeav1.com/' }
                     });
+                    continue;
                 }
             }
 
-            // Check for embed player URL to resolve further
-            const embedUrl = node.embed || node.iframe || node.player;
+            // Check for embed player URL
+            const embedUrl = resolve(data, node.embed) || resolve(data, node.iframe) || resolve(data, node.player);
             if (embedUrl && typeof embedUrl === 'string' && embedUrl.startsWith('http')) {
                 try {
                     const embedText = await soraFetch(embedUrl);
                     if (embedText) {
-                        const m3u8 = embedText.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/);
-                        const mp4 = embedText.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/);
-                        const found = (mp4 || m3u8)?.[0];
+                        const mp4 = embedText.match(/https?:\/\/[^\s"'<>\\]+\.mp4[^\s"'<>\\]*/)?.[0];
+                        const m3u8 = embedText.match(/https?:\/\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*/)?.[0];
+                        const found = mp4 || m3u8;
                         if (found) {
                             streams.push({
-                                title: `${node.server || node.name || 'Embed'} (${isDub ? 'DUB' : 'SUB'})`,
+                                title: `${resolve(data, node.server) || resolve(data, node.name) || 'Embed'} (${isDub ? 'DUB' : 'SUB'})`,
                                 streamUrl: found,
                                 headers: { 'Referer': embedUrl }
                             });
@@ -296,26 +290,21 @@ async function extractStreamUrl(url) {
             }
         }
 
-        // Fallback: scan raw JSON text for any m3u8 or mp4 URLs
+        // Fallback: scan raw JSON for any stream URLs
         if (streams.length === 0) {
-            const m3u8Matches = [...text.matchAll(/https?:\\?\/\\?\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*/g)];
-            const mp4Matches = [...text.matchAll(/https?:\\?\/\\?\/[^\s"'<>\\]+\.mp4[^\s"'<>\\]*/g)];
-            const allUrls = [...mp4Matches, ...m3u8Matches];
-
-            for (const match of allUrls) {
-                const streamUrl = match[0].replace(/\\u002F/g, '/').replace(/\\/g, '');
+            const mp4 = text.match(/https?:\\?\/\\?\/[^\s"'<>\\]+\.mp4[^\s"'<>\\]*/)?.[0];
+            const m3u8 = text.match(/https?:\\?\/\\?\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*/)?.[0];
+            const found = mp4 || m3u8;
+            if (found) {
                 streams.push({
                     title: isDub ? 'Stream (DUB)' : 'Stream (SUB)',
-                    streamUrl,
+                    streamUrl: found.replace(/\\/g, ''),
                     headers: { 'Referer': 'https://animeav1.com/' }
                 });
-                break; // Just take the first one found
             }
         }
 
-        if (streams.length === 0) {
-            console.log('extractStreamUrl: No streams found for', url);
-        }
+        if (streams.length === 0) console.log('extractStreamUrl: No streams found for', url);
 
         return JSON.stringify({ streams });
 
