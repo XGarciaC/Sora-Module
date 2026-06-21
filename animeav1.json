@@ -1,17 +1,17 @@
 {
-   "sourceName": "AnimeAV1",
-   "iconUrl": "https://animeav1.com/img/logo.svg",
-   "author": {
-       "name": "YourName",
-       "icon": "https://animeav1.com/img/logo.svg"
-   },
-   "version": "1.1.0",
-   "language": "Spanish (SUB/DUB)",
-   "streamType": "MP4",
-   "quality": "1080p",
-   "baseUrl": "https://animeav1.com/",
-   "searchBaseUrl": "https://animeav1.com/catalogo?q=%s",
-   "scriptUrl": "https://raw.githubusercontent.com/XGarciaC/Sora-Module/refs/heads/main/animeav1.js",
-   "asyncJS": true,
-   "type": "anime"
+  "sourceName": "AnimeAV1",
+  "iconUrl": "https://animeav1.com/img/logo.svg",
+  "author": {
+    "name": "XGarciaC",
+    "icon": "https://animeav1.com/img/logo.svg"
+  },
+  "version": "1.1.0",
+  "language": "Spanish (SUB/DUB)",
+  "streamType": "MP4",
+  "quality": "1080p",
+  "baseUrl": "https://animeav1.com/",
+  "searchBaseUrl": "https://animeav1.com/catalogo?q=%s",
+  "scriptUrl": "https://raw.githubusercontent.com/XGarciaC/Sora-Module/refs/heads/main/animeav1.js",
+  "asyncJS": true,
+  "type": "anime"
 }
